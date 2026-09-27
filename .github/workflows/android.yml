@@ -1,0 +1,56 @@
+name: Gerar APK FINANÇAS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar arquivos do repositório
+        uses: actions/checkout@v4
+
+      - name: Extrair projeto
+        run: |
+          unzip -q financas-app.zip
+          cp -r financas-app/. ./ --exclude financas-app.zip 2>/dev/null || true
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: financas-app/package-lock.json
+
+      - name: Instalar dependências
+        working-directory: financas-app
+        run: npm install
+
+      - name: Adicionar Android
+        working-directory: financas-app
+        run: npx cap add android
+
+      - name: Gerar versão web
+        working-directory: financas-app
+        run: npm run build
+
+      - name: Sincronizar Capacitor
+        working-directory: financas-app
+        run: npx cap sync android
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Gerar APK
+        working-directory: financas-app/android
+        run: ./gradlew assembleDebug
+
+      - name: Disponibilizar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FINANCAS-APK
+          path: financas-app/android/app/build/outputs/apk/debug/app-debug.apk
