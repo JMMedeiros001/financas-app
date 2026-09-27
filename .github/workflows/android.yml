@@ -28,6 +28,14 @@ jobs:
         working-directory: ${{ env.APP_DIR }}
         run: npm install
 
+      - name: Verificar logo
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          echo "Procurando logo.png..."
+          find . -type f -iname "logo.png" -print
+          echo "Conteúdo de src/assets:"
+          ls -la src/assets || true
+
       - name: Gerar versão web
         working-directory: ${{ env.APP_DIR }}
         run: npm run build
