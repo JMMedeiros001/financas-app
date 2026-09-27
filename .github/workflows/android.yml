@@ -8,36 +8,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar arquivos do repositório
+      - name: Baixar projeto
         uses: actions/checkout@v4
 
       - name: Extrair projeto
         run: |
-          unzip -q financas-app.zip
-          cp -r financas-app/. ./ --exclude financas-app.zip 2>/dev/null || true
+          unzip -q financas-app.zip -d projeto
+          echo "APP_DIR=projeto/financas-app" >> "$GITHUB_ENV"
 
       - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: financas-app/package-lock.json
 
       - name: Instalar dependências
-        working-directory: financas-app
+        working-directory: ${{ env.APP_DIR }}
         run: npm install
 
-      - name: Adicionar Android
-        working-directory: financas-app
-        run: npx cap add android
-
       - name: Gerar versão web
-        working-directory: financas-app
+        working-directory: ${{ env.APP_DIR }}
         run: npm run build
-
-      - name: Sincronizar Capacitor
-        working-directory: financas-app
-        run: npx cap sync android
 
       - name: Configurar Java
         uses: actions/setup-java@v4
@@ -45,12 +35,22 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Preparar Android
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
       - name: Gerar APK
-        working-directory: financas-app/android
-        run: ./gradlew assembleDebug
+        working-directory: ${{ env.APP_DIR }}/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
 
       - name: Disponibilizar APK
         uses: actions/upload-artifact@v4
         with:
           name: FINANCAS-APK
-          path: financas-app/android/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.APP_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
