@@ -1,67 +1,64 @@
-name: Gerar APK FINANÇAS
+name: Build Android APK
+
+# Compila o app Android automaticamente na nuvem do GitHub — você não precisa
+# ter Android Studio instalado. Depois de rodar, baixe o APK em:
+# aba "Actions" → o run mais recente → seção "Artifacts" → financas-debug-apk
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [main]
+  workflow_dispatch: {}   # também permite rodar manualmente pelo botão "Run workflow"
 
 jobs:
-  build-apk:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Baixar projeto
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Extrair projeto
-        run: |
-          unzip -q financas-app.zip -d projeto
-          echo "APP_DIR=projeto/financas-app" >> "$GITHUB_ENV"
-
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Instalar dependências
-        working-directory: ${{ env.APP_DIR }}
-        run: npm install
-
-      - name: Verificar logo
-        working-directory: ${{ env.APP_DIR }}
+      - name: Instalar dependências e buildar o app web
         run: |
-          echo "Procurando logo.png..."
-          find . -type f -iname "logo.png" -print
-          echo "Conteúdo de src/assets:"
-          ls -la src/assets || true
+          npm install
+          npm run build
 
-      - name: Gerar versão web
-        working-directory: ${{ env.APP_DIR }}
-        run: npm run build
+      - name: Adicionar o projeto Android do Capacitor
+        run: npx cap add android
 
-      - name: Configurar Java
-        uses: actions/setup-java@v4
+      - name: Gerar o ícone do app Android a partir de assets/icon.png
+        run: |
+          pip install --quiet pillow
+          python3 scripts/generate-android-icons.py
+
+      - name: Confirmar que o ícone padrão foi mesmo substituído
+        run: |
+          FILE=android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png
+          if [ ! -s "$FILE" ]; then
+            echo "::error::$FILE não foi criado (ou está vazio) — o ícone não foi gerado."
+            exit 1
+          fi
+          if ! grep -q "ic_launcher_foreground" android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml; then
+            echo "::error::ic_launcher.xml não está apontando para o ícone adaptativo gerado."
+            exit 1
+          fi
+          echo "OK: $FILE existe ($(stat -c%s "$FILE") bytes) e o XML do ícone adaptativo aponta pra ele."
+
+      - name: Sincronizar o projeto Android
+        run: npx cap sync android
+
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
 
-      - name: Preparar Android
-        working-directory: ${{ env.APP_DIR }}
-        run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
-          npx cap sync android
+      - name: Compilar o APK (debug, sem assinatura de release)
+        working-directory: android
+        run: ./gradlew assembleDebug
 
-      - name: Gerar APK
-        working-directory: ${{ env.APP_DIR }}/android
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
-
-      - name: Disponibilizar APK
+      - name: Publicar o APK como artefato para download
         uses: actions/upload-artifact@v4
         with:
-          name: FINANCAS-APK
-          path: ${{ env.APP_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
+          name: financas-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
