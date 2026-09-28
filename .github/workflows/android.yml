@@ -21,19 +21,17 @@ jobs:
             echo "Encontrado financas-app.zip na raiz do repositório — descompactando."
             unzip -q financas-app.zip -d /tmp/financas-extracted
             rm -f financas-app.zip
-            shopt -s dotglob
-            mv /tmp/financas-extracted/financas-app/* .
+            cp -a /tmp/financas-extracted/financas-app/. .
             rm -rf /tmp/financas-extracted
           fi
           if [ ! -f package.json ] && [ -f financas-app/package.json ]; then
             echo "Projeto encontrado dentro de uma subpasta 'financas-app/' — movendo pra raiz do repositório."
-            shopt -s dotglob
-            mv financas-app/* .
-            rmdir financas-app
+            cp -a financas-app/. .
+            rm -rf financas-app
           fi
           if [ ! -f package.json ]; then
             echo "::error::package.json não encontrado na raiz, em financas-app/ nem em financas-app.zip. Estrutura do repositório:"
-            find . -maxdepth 3 -not -path "./.git*"
+            find . -maxdepth 3 -not -path "./.git" -not -path "./.git/*"
             exit 1
           fi
 
