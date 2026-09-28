@@ -7,7 +7,7 @@ name: Build Android APK
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}   # também permite rodar manualmente pelo botão "Run workflow"
+  workflow_dispatch: {}
 
 jobs:
   build:
@@ -15,8 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Corrigir estrutura do repositório (caso o projeto tenha sido enviado dentro de uma subpasta extra)
+      - name: Corrigir estrutura do repositório (zip não descompactado ou pasta extra)
         run: |
+          if [ ! -f package.json ] && [ -f financas-app.zip ]; then
+            echo "Encontrado financas-app.zip na raiz do repositório — descompactando."
+            unzip -q financas-app.zip -d /tmp/financas-extracted
+            rm -f financas-app.zip
+            shopt -s dotglob
+            mv /tmp/financas-extracted/financas-app/* .
+            rm -rf /tmp/financas-extracted
+          fi
           if [ ! -f package.json ] && [ -f financas-app/package.json ]; then
             echo "Projeto encontrado dentro de uma subpasta 'financas-app/' — movendo pra raiz do repositório."
             shopt -s dotglob
@@ -24,7 +32,7 @@ jobs:
             rmdir financas-app
           fi
           if [ ! -f package.json ]; then
-            echo "::error::package.json não encontrado na raiz nem em financas-app/. Estrutura do repositório:"
+            echo "::error::package.json não encontrado na raiz, em financas-app/ nem em financas-app.zip. Estrutura do repositório:"
             find . -maxdepth 3 -not -path "./.git*"
             exit 1
           fi
