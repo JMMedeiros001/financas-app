@@ -15,6 +15,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Corrigir estrutura do repositório (caso o projeto tenha sido enviado dentro de uma subpasta extra)
+        run: |
+          if [ ! -f package.json ] && [ -f financas-app/package.json ]; then
+            echo "Projeto encontrado dentro de uma subpasta 'financas-app/' — movendo pra raiz do repositório."
+            shopt -s dotglob
+            mv financas-app/* .
+            rmdir financas-app
+          fi
+          if [ ! -f package.json ]; then
+            echo "::error::package.json não encontrado na raiz nem em financas-app/. Estrutura do repositório:"
+            find . -maxdepth 3 -not -path "./.git*"
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
