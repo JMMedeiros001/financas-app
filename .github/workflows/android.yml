@@ -1,84 +1,99 @@
-name: Build Android APK
-
-# Compila o app Android automaticamente na nuvem do GitHub — você não precisa
-# ter Android Studio instalado. Depois de rodar, baixe o APK em:
-# aba "Actions" → o run mais recente → seção "Artifacts" → financas-debug-apk
+name: Build KUPA Android APK
 
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Corrigir estrutura do repositório (zip não descompactado ou pasta extra)
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Encontrar e preparar projeto KUPA
         run: |
-          if [ ! -f package.json ] && [ -f financas-app.zip ]; then
-            echo "Encontrado financas-app.zip na raiz do repositório — descompactando."
-            unzip -q financas-app.zip -d /tmp/financas-extracted
-            rm -f financas-app.zip
-            cp -a /tmp/financas-extracted/financas-app/. .
-            rm -rf /tmp/financas-extracted
+          set -e
+
+          if [ -f "kupa-projeto.zip" ]; then
+            echo "Encontrado kupa-projeto.zip"
+            unzip -q kupa-projeto.zip -d /tmp/kupa
+            rm -f kupa-projeto.zip
+
+            if [ -d "/tmp/kupa/kupa-projeto" ]; then
+              cp -a /tmp/kupa/kupa-projeto/. .
+            else
+              cp -a /tmp/kupa/. .
+            fi
           fi
-          if [ ! -f package.json ] && [ -f financas-app/package.json ]; then
-            echo "Projeto encontrado dentro de uma subpasta 'financas-app/' — movendo pra raiz do repositório."
-            cp -a financas-app/. .
-            rm -rf financas-app
-          fi
-          if [ ! -f package.json ]; then
-            echo "::error::package.json não encontrado na raiz, em financas-app/ nem em financas-app.zip. Estrutura do repositório:"
-            find . -maxdepth 3 -not -path "./.git" -not -path "./.git/*"
+
+          echo "Estrutura encontrada:"
+          find . -maxdepth 3 \
+            -not -path "./.git" \
+            -not -path "./.git/*" \
+            -type f | sort | head -300
+
+      - name: Verificar projeto
+        run: |
+          if [ -f "package.json" ]; then
+            echo "Projeto JavaScript/TypeScript encontrado."
+          elif [ -f "pubspec.yaml" ]; then
+            echo "Projeto Flutter encontrado."
+          elif [ -f "settings.gradle" ] || [ -f "settings.gradle.kts" ]; then
+            echo "Projeto Android nativo encontrado."
+          else
+            echo "::error::Não foi possível identificar automaticamente o projeto KUPA."
             exit 1
           fi
 
-      - uses: actions/setup-node@v4
+      - name: Configurar Node.js
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
-      - name: Instalar dependências e buildar o app web
+      - name: Instalar dependências
+        if: ${{ hashFiles('package.json') != '' }}
+        run: npm install
+
+      - name: Compilar projeto web
+        if: ${{ hashFiles('package.json') != '' }}
+        run: npm run build
+
+      - name: Instalar Capacitor
+        if: ${{ hashFiles('package.json') != '' }}
         run: |
-          npm install
-          npm run build
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap add android || true
+          npx cap sync android
 
-      - name: Adicionar o projeto Android do Capacitor
-        run: npx cap add android
-
-      - name: Gerar o ícone do app Android a partir de assets/icon.png
-        run: |
-          pip install --quiet pillow
-          python3 scripts/generate-android-icons.py
-
-      - name: Confirmar que o ícone padrão foi mesmo substituído
-        run: |
-          FILE=android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png
-          if [ ! -s "$FILE" ]; then
-            echo "::error::$FILE não foi criado (ou está vazio) — o ícone não foi gerado."
-            exit 1
-          fi
-          if ! grep -q "ic_launcher_foreground" android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml; then
-            echo "::error::ic_launcher.xml não está apontando para o ícone adaptativo gerado."
-            exit 1
-          fi
-          echo "OK: $FILE existe ($(stat -c%s "$FILE") bytes) e o XML do ícone adaptativo aponta pra ele."
-
-      - name: Sincronizar o projeto Android
-        run: npx cap sync android
-
-      - uses: actions/setup-java@v4
+      - name: Configurar Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Compilar o APK (debug, sem assinatura de release)
-        working-directory: android
-        run: ./gradlew assembleDebug
+      - name: Dar permissão ao Gradle
+        run: |
+          if [ -f "android/gradlew" ]; then
+            chmod +x android/gradlew
+          fi
 
-      - name: Publicar o APK como artefato para download
+      - name: Compilar APK
+        run: |
+          if [ -f "android/gradlew" ]; then
+            cd android
+            ./gradlew assembleDebug
+          else
+            echo "::error::Gradle/Android não foi encontrado."
+            exit 1
+          fi
+
+      - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
-          name: financas-debug-apk
+          name: KUPA-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
