@@ -14,6 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
     steps:
       - name: Baixar repositório
         uses: actions/checkout@v4
@@ -25,27 +29,27 @@ jobs:
 
           ZIP="$GITHUB_WORKSPACE/kupa-projeto.zip"
           test -f "$ZIP" || {
-            echo "::error::kupa-projeto.zip não foi encontrado na raiz do repositório."
+            echo "::error::kupa-projeto.zip não foi encontrado na raiz."
             exit 1
           }
 
-          EXTRACT_DIR="$(mktemp -d)"
-          unzip -q "$ZIP" -d "$EXTRACT_DIR"
+          TEMP_DIR="$(mktemp -d)"
+          unzip -q "$ZIP" -d "$TEMP_DIR"
 
-          if [ -f "$EXTRACT_DIR/kupa/android/settings.gradle.kts" ]; then
-            PROJECT_ROOT="$EXTRACT_DIR/kupa"
-          elif [ -f "$EXTRACT_DIR/android/settings.gradle.kts" ]; then
-            PROJECT_ROOT="$EXTRACT_DIR"
+          if [ -f "$TEMP_DIR/kupa/android/settings.gradle.kts" ]; then
+            ROOT="$TEMP_DIR/kupa"
+          elif [ -f "$TEMP_DIR/android/settings.gradle.kts" ]; then
+            ROOT="$TEMP_DIR"
           else
-            echo "::error::Não encontrei android/settings.gradle.kts dentro do ZIP."
-            find "$EXTRACT_DIR" -maxdepth 4 -type f | sort | head -200
+            echo "::error::Estrutura Android não encontrada no ZIP."
+            find "$TEMP_DIR" -maxdepth 4 -type f | head -200
             exit 1
           fi
 
           for item in android backend README.md README_BACKEND.md render.yaml; do
-            if [ -e "$PROJECT_ROOT/$item" ]; then
+            if [ -e "$ROOT/$item" ]; then
               rm -rf "$GITHUB_WORKSPACE/$item"
-              cp -a "$PROJECT_ROOT/$item" "$GITHUB_WORKSPACE/$item"
+              cp -a "$ROOT/$item" "$GITHUB_WORKSPACE/$item"
             fi
           done
 
@@ -53,8 +57,7 @@ jobs:
           test -f android/build.gradle.kts
           test -f android/app/build.gradle.kts
 
-          echo "Projeto Android encontrado."
-          find android -maxdepth 4 -type f \( -name '*.gradle.kts' -o -name 'gradle-wrapper.properties' -o -name 'gradlew' \) -print | sort
+          echo "Projeto KUPA extraído."
 
       - name: Configurar Java 17
         uses: actions/setup-java@v4
@@ -63,34 +66,51 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Verificar Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME"
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" || {
+            echo "::error::sdkmanager não encontrado no Android SDK do runner."
+            find "$ANDROID_HOME" -maxdepth 5 -name sdkmanager -type f
+            exit 1
+          }
+
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            --list_installed
 
       - name: Instalar componentes Android
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-          adb version
-          sdkmanager --list_installed
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
+          yes | "$SDKMANAGER" --licenses || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-          cache-read-only: false
 
-      - name: Diagnosticar configurações
+      - name: Diagnosticar ambiente
         shell: bash
         run: |
-          set -euo pipefail
           java -version
           gradle --version
-          grep -nE 'com.android.application|org.jetbrains.kotlin.android' android/build.gradle.kts
-          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
-            cat android/gradle/wrapper/gradle-wrapper.properties
-          fi
+          ls -la android
+          cat android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Validar configuração Gradle
         working-directory: android
@@ -113,10 +133,9 @@ jobs:
           set -euo pipefail
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
-          file "$APK"
-          ls -lh "$APK"
           unzip -t "$APK" >/dev/null
-          echo "APK válido."
+          ls -lh "$APK"
+          echo "APK gerado e validado."
 
       - name: Publicar APK
         if: success()
@@ -127,7 +146,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Publicar logs de diagnóstico
+      - name: Publicar logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
