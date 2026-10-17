@@ -1,106 +1,139 @@
-KUPA — Corrigir falha na compilação do APK Android pelo GitHub Actions
 
-Atue como engenheiro Android sênior, especialista em Kotlin, Gradle, Android Gradle Plugin e GitHub Actions.
+name: Build KUPA Android APK
 
-1. Contexto do problema
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
-O workflow "Build KUPA Android APK" falha na etapa Compilar APK, após aproximadamente 37 segundos.
+permissions:
+  contents: read
 
-O comando atual é:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
 
-gradle assembleDebug --stacktrace
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
 
-O ambiente utiliza:
+      - name: Extrair projeto KUPA
+        shell: bash
+        run: |
+          set -euo pipefail
 
-- Ubuntu latest
-- Java 17 (Temurin)
-- Gradle 8.11.1
-- Projeto Android extraído de "kupa-projeto.zip"
-- Arquivos Gradle Kotlin DSL (".gradle.kts")
+          ZIP="$GITHUB_WORKSPACE/kupa-projeto.zip"
+          test -f "$ZIP" || {
+            echo "::error::kupa-projeto.zip não foi encontrado na raiz do repositório."
+            exit 1
+          }
 
-O log disponível termina com "BUILD FAILED" e "Process completed with exit code 1", mas a mensagem original que explica a falha ainda não foi identificada.
+          EXTRACT_DIR="$(mktemp -d)"
+          unzip -q "$ZIP" -d "$EXTRACT_DIR"
 
-2. Objetivo principal
+          if [ -f "$EXTRACT_DIR/kupa/android/settings.gradle.kts" ]; then
+            PROJECT_ROOT="$EXTRACT_DIR/kupa"
+          elif [ -f "$EXTRACT_DIR/android/settings.gradle.kts" ]; then
+            PROJECT_ROOT="$EXTRACT_DIR"
+          else
+            echo "::error::Não encontrei android/settings.gradle.kts dentro do ZIP."
+            find "$EXTRACT_DIR" -maxdepth 4 -type f | sort | head -200
+            exit 1
+          fi
 
-Analise o projeto real e identifique a causa exata da falha. Corrija-a com a menor alteração segura possível, sem reescrever o aplicativo inteiro e sem remover funcionalidades existentes.
+          for item in android backend README.md README_BACKEND.md render.yaml; do
+            if [ -e "$PROJECT_ROOT/$item" ]; then
+              rm -rf "$GITHUB_WORKSPACE/$item"
+              cp -a "$PROJECT_ROOT/$item" "$GITHUB_WORKSPACE/$item"
+            fi
+          done
 
-Não presuma que o problema é a versão do Gradle. Verifique primeiro a mensagem original de erro e as configurações reais do projeto.
+          test -f android/settings.gradle.kts
+          test -f android/build.gradle.kts
+          test -f android/app/build.gradle.kts
 
-3. Inspeção obrigatória
+          echo "Projeto Android encontrado."
+          find android -maxdepth 4 -type f \( -name '*.gradle.kts' -o -name 'gradle-wrapper.properties' -o -name 'gradlew' \) -print | sort
 
-Antes de modificar qualquer arquivo:
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
 
-1. Examine a estrutura completa do ZIP e identifique a raiz real do projeto.
-2. Verifique se existem "android/gradlew", "android/gradlew.bat", "android/gradle/wrapper/gradle-wrapper.properties" e os arquivos de configuração necessários.
-3. Leia:
-   - "android/settings.gradle.kts"
-   - "android/build.gradle.kts"
-   - "android/app/build.gradle.kts"
-   - "android/gradle.properties", se existir
-   - "AndroidManifest.xml"
-   - Arquivos de código e recursos envolvidos na falha.
-4. Identifique as versões do Android Gradle Plugin, Kotlin, Gradle e SDK Android declaradas no projeto.
-5. Verifique a compatibilidade entre essas versões.
-6. Confira se o workflow extrai o ZIP corretamente e se não sobrescreve ou mistura arquivos com versões diferentes do projeto.
-7. Reproduza a compilação, se o ambiente permitir, e registre o primeiro erro real.
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
 
-Se não for possível executar a compilação no ambiente disponível, deixe isso explícito e não afirme que o APK foi compilado.
+      - name: Instalar componentes Android
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          adb version
+          sdkmanager --list_installed
 
-4. Correção do workflow
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+          cache-read-only: false
 
-Revise o workflow do GitHub Actions.
+      - name: Diagnosticar configurações
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          gradle --version
+          grep -nE 'com.android.application|org.jetbrains.kotlin.android' android/build.gradle.kts
+          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
+            cat android/gradle/wrapper/gradle-wrapper.properties
+          fi
 
-- Prefira o Gradle Wrapper do próprio projeto ("./gradlew") se ele estiver completo e configurado corretamente.
-- Se o Wrapper estiver ausente ou inválido, corrija-o adequadamente ou mantenha a instalação explícita de uma versão compatível do Gradle.
-- Não presuma que "gradlew" existe.
-- Configure o Java e o SDK Android de acordo com os requisitos reais do projeto.
-- Mantenha a extração do ZIP robusta, verificando a estrutura antes de copiar arquivos.
-- Faça a compilação com logs suficientes para identificar falhas.
-- Execute a verificação do APK somente após a compilação bem-sucedida.
-- Publique o artefato somente quando o APK realmente existir.
-- Não esconda erros usando "continue-on-error", comandos que ignoram falhas ou condições que façam o workflow parecer bem-sucedido quando a compilação falhar.
+      - name: Validar configuração Gradle
+        working-directory: android
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle tasks --stacktrace 2>&1 | tee ../kupa-config.log
 
-5. Restrições importantes
+      - name: Compilar APK Debug
+        working-directory: android
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --stacktrace --warning-mode all 2>&1 | tee ../kupa-build.log
 
-Não faça nenhuma destas ações:
+      - name: Verificar APK
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          file "$APK"
+          ls -lh "$APK"
+          unzip -t "$APK" >/dev/null
+          echo "APK válido."
 
-- Não desative testes para conseguir compilar.
-- Não remova dependências ou funcionalidades sem justificativa técnica.
-- Não substitua implementações reais por simulações.
-- Não apague código de segurança, validação, permissões ou proteção de dados para eliminar erros.
-- Não reduza a versão do SDK ou das ferramentas arbitrariamente.
-- Não altere chaves, tokens ou credenciais para tentar corrigir a compilação.
-- Não declare o problema resolvido sem evidências.
-- Não gere um APK vazio, falso ou de outro projeto.
-- Não modifique a arquitetura de segurança do KUPA como parte desta correção, salvo se houver uma relação direta e comprovada com a falha.
+      - name: Publicar APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KUPA-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
 
-6. Validação depois da correção
-
-Execute tudo o que o ambiente permitir:
-
-1. Verificação da estrutura do projeto.
-2. Testes existentes.
-3. Compilação de "assembleDebug".
-4. Verificação de que "android/app/build/outputs/apk/debug/app-debug.apk" foi gerado.
-5. Verificação do tamanho e da integridade básica do APK.
-6. Confirmação de que o workflow consegue localizar e publicar o artefato correto.
-
-Se houver ferramentas disponíveis, valide também o conteúdo do APK e o identificador do aplicativo.
-
-Não confunda testes unitários com uma compilação Android real. Não confunda compilação bem-sucedida com teste em dispositivo físico.
-
-7. Entrega obrigatória
-
-Ao terminar, forneça:
-
-1. Causa raiz: mensagem original e explicação técnica.
-2. Arquivos alterados: lista dos arquivos e justificativa de cada mudança.
-3. Correção aplicada: resumo objetivo das alterações.
-4. Testes executados: comandos, resultados e falhas restantes.
-5. Status do APK: informe se foi realmente gerado ou não.
-6. Status do GitHub Actions: indique se o workflow foi efetivamente validado ou apenas revisado.
-7. Pendências: tudo o que não foi possível verificar.
-
-Se a causa não puder ser confirmada, apresente as hipóteses separadamente e explique como obter a evidência que falta, sem inventar uma solução definitiva.
-
-Prioridade: descobrir a causa real, corrigir minimamente, preservar a integridade do KUPA e apresentar evidências verificáveis.
+      - name: Publicar logs de diagnóstico
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KUPA-build-diagnostics
+          path: |
+            kupa-config.log
+            kupa-build.log
+          if-no-files-found: ignore
+          retention-days: 7
