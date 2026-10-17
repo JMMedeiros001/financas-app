@@ -14,10 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-
     steps:
       - name: Baixar repositório
         uses: actions/checkout@v4
@@ -29,7 +25,7 @@ jobs:
 
           ZIP="$GITHUB_WORKSPACE/kupa-projeto.zip"
           if [ ! -f "$ZIP" ]; then
-            echo "::error::kupa-projeto.zip não encontrado na raiz do repositório."
+            echo "::error::kupa-projeto.zip não encontrado na raiz."
             exit 1
           fi
 
@@ -57,7 +53,7 @@ jobs:
           test -f android/build.gradle.kts
           test -f android/app/build.gradle.kts
 
-          echo "Projeto KUPA extraído com sucesso."
+          echo "Projeto KUPA extraído."
 
       - name: Configurar Java 17
         uses: actions/setup-java@v4
@@ -66,45 +62,18 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Verificar Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "ANDROID_HOME=$ANDROID_HOME"
-
-          if [ ! -d "$ANDROID_HOME" ]; then
-            echo "::error::Diretório do Android SDK não encontrado."
-            exit 1
-          fi
-
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1 || true)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager não encontrado no runner."
-            find "$ANDROID_HOME" -maxdepth 5 -type f | head -200
-            exit 1
-          fi
-
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-
-          "$SDKMANAGER" --version
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Instalar componentes Android
         shell: bash
         run: |
           set -euo pipefail
-
-          yes | "$SDKMANAGER" --licenses || true
-
-          "$SDKMANAGER" \
+          yes | sdkmanager --licenses || true
+          sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
-
-          "$SDKMANAGER" --list_installed
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -115,25 +84,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           java -version
           gradle --version
-
-          echo "========== CONFIGURAÇÃO ANDROID =========="
+          echo "========== ARQUIVOS GRADLE =========="
           cat android/build.gradle.kts
           cat android/app/build.gradle.kts
-
-          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
-            cat android/gradle/wrapper/gradle-wrapper.properties
-          fi
+          cat android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Validar configuração Gradle
         working-directory: android
         shell: bash
         run: |
           set -o pipefail
-          gradle tasks --no-daemon --stacktrace --info 2>&1 \
-            | tee ../kupa-config.log
+          gradle tasks \
+            --no-daemon \
+            --stacktrace \
+            --console=plain 2>&1 | tee ../kupa-config.log
 
       - name: Compilar APK Debug
         working-directory: android
@@ -144,17 +110,16 @@ jobs:
           gradle assembleDebug \
             --no-daemon \
             --stacktrace \
-            --info \
-            --warning-mode all 2>&1 | tee ../kupa-build.log
+            --console=plain 2>&1 | tee ../kupa-build.log
 
           RESULT=${PIPESTATUS[0]}
 
           echo ""
-          echo "========== RESUMO DO ERRO =========="
+          echo "========== ERRO PRINCIPAL =========="
 
-          grep -n -B 5 -A 12 -E \
-            "What went wrong|Compilation error|e: file:|Unresolved reference|Could not resolve|Execution failed|Android resource linking failed|Manifest merger failed" \
-            ../kupa-build.log | tail -150 || true
+          grep -n -B 8 -A 15 -E \
+            "What went wrong|Compilation error|e: file:|error:|Unresolved reference|Could not resolve|Android resource linking failed|Manifest merger failed|Caused by:" \
+            ../kupa-build.log | tail -160 || true
 
           exit "$RESULT"
 
@@ -163,16 +128,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
 
-          if [ ! -s "$APK" ]; then
-            echo "::error::O APK não foi gerado."
-            exit 1
-          fi
-
+          test -s "$APK"
           unzip -t "$APK" >/dev/null
           ls -lh "$APK"
+
           echo "APK gerado e validado."
 
       - name: Publicar APK
