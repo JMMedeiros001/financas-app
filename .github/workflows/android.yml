@@ -17,7 +17,7 @@ jobs:
   build:
     name: Build KUPA Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
 
     steps:
       - name: Baixar repositório
@@ -31,7 +31,7 @@ jobs:
           ZIP="$GITHUB_WORKSPACE/kupa-projeto.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::kupa-projeto.zip não foi encontrado na raiz."
+            echo "::error::Arquivo kupa-projeto.zip não encontrado na raiz do repositório."
             exit 1
           fi
 
@@ -43,7 +43,7 @@ jobs:
           elif [ -f "$EXTRACT_DIR/android/settings.gradle.kts" ]; then
             PROJECT_ROOT="$EXTRACT_DIR"
           else
-            echo "::error::Estrutura Android não encontrada no ZIP."
+            echo "::error::Estrutura Android não encontrada dentro do ZIP."
             find "$EXTRACT_DIR" -maxdepth 5 -type f | head -200
             exit 1
           fi
@@ -60,6 +60,7 @@ jobs:
           test -f android/app/build.gradle.kts
 
           echo "Projeto KUPA extraído com sucesso."
+          ls -la android
 
       - name: Configurar Java 17
         uses: actions/setup-java@v4
@@ -69,68 +70,42 @@ jobs:
           cache: gradle
 
       - name: Localizar Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SDKMANAGER="$(find /usr/local/lib/android /opt /usr/lib \
-            -type f -path '*/cmdline-tools/*/bin/sdkmanager' \
-            2>/dev/null | head -1 || true)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            SDKMANAGER="$(command -v sdkmanager || true)"
-          fi
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager não encontrado."
-            exit 1
-          fi
-
-          SDK_ROOT="${SDKMANAGER%/cmdline-tools/*/bin/sdkmanager}"
-
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
-
-          echo "SDK manager: $SDKMANAGER"
-          echo "SDK root: $SDK_ROOT"
-          "$SDKMANAGER" --version
+        uses: android-actions/setup-android@v3
 
       - name: Aceitar licenças Android
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
 
-          set +e
-          yes | "$SDKMANAGER" --licenses
-          STATUS=("${PIPESTATUS[@]}")
-          set -e
+          echo "Aceitando licenças do Android SDK..."
 
-          SDK_STATUS="${STATUS[1]}"
+          # O comando yes pode terminar com SIGPIPE quando o sdkmanager
+          # fecha a entrada após aceitar as licenças. Isso não deve
+          # interromper o workflow se as licenças foram aceitas.
+          yes | sdkmanager --licenses >/tmp/kupa-sdk-licenses.log 2>&1 || true
 
-          if [ "$SDK_STATUS" -ne 0 ]; then
-            echo "::error::Falha ao aceitar as licenças Android. Código: $SDK_STATUS"
-            exit "$SDK_STATUS"
+          cat /tmp/kupa-sdk-licenses.log
+
+          if ! sdkmanager --list_installed >/tmp/kupa-sdk-installed.log 2>&1; then
+            cat /tmp/kupa-sdk-installed.log
+            echo "::error::Não foi possível consultar os componentes do Android SDK."
+            exit 1
           fi
 
-          echo "Licenças Android aceitas."
+          echo "Licenças verificadas."
 
       - name: Instalar componentes Android
         shell: bash
         run: |
           set -euo pipefail
 
-          "$SDKMANAGER" --install \
+          sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-          test -d "$ANDROID_HOME/platforms/android-35"
-          test -d "$ANDROID_HOME/build-tools/35.0.0"
-
-          echo "Componentes Android instalados."
+          echo "Componentes instalados:"
+          sdkmanager --list_installed
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -143,25 +118,37 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "=== Java ==="
           java -version
+
+          echo "=== Gradle ==="
           gradle --version
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "=== Android SDK ==="
+          echo "ANDROID_HOME=${ANDROID_HOME:-não definido}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-não definido}"
 
-          cat android/gradle/wrapper/gradle-wrapper.properties
-
-          echo "Plugins Android:"
+          echo "=== Configuração dos plugins ==="
           grep -nE 'com.android.application|org.jetbrains.kotlin.android' \
             android/build.gradle.kts
+
+          echo "=== Configuração do SDK do projeto ==="
+          grep -nE 'compileSdk|minSdk|targetSdk' \
+            android/app/build.gradle.kts || true
+
+          echo "=== Wrapper Gradle ==="
+          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
+            cat android/gradle/wrapper/gradle-wrapper.properties
+          else
+            echo "Wrapper ausente; será usado o Gradle instalado pelo workflow."
+          fi
 
       - name: Validar configuração Gradle
         working-directory: android
         shell: bash
         run: |
           set -o pipefail
-          gradle tasks --no-daemon --stacktrace 2>&1 \
-            | tee ../kupa-config.log
+          gradle tasks --no-daemon --stacktrace 2>&1 | tee ../kupa-config.log
 
       - name: Compilar APK Debug
         working-directory: android
@@ -183,14 +170,16 @@ jobs:
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "::error::O APK não foi gerado ou está vazio."
+            echo "::error::APK não encontrado ou arquivo vazio: $APK"
             exit 1
           fi
 
-          unzip -t "$APK" >/dev/null
+          echo "=== APK gerado ==="
           ls -lh "$APK"
+          file "$APK"
+          unzip -t "$APK" >/dev/null
 
-          echo "APK validado."
+          echo "APK validado com sucesso."
 
       - name: Publicar APK
         if: success()
@@ -209,5 +198,7 @@ jobs:
           path: |
             kupa-config.log
             kupa-build.log
+            /tmp/kupa-sdk-licenses.log
+            /tmp/kupa-sdk-installed.log
           if-no-files-found: ignore
           retention-days: 7
