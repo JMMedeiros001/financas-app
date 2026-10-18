@@ -14,6 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
     steps:
       - name: Baixar repositório
         uses: actions/checkout@v4
@@ -24,10 +28,10 @@ jobs:
           set -euo pipefail
 
           ZIP="$GITHUB_WORKSPACE/kupa-projeto.zip"
-          if [ ! -f "$ZIP" ]; then
+          test -f "$ZIP" || {
             echo "::error::kupa-projeto.zip não encontrado na raiz."
             exit 1
-          fi
+          }
 
           TEMP_DIR="$(mktemp -d)"
           unzip -q "$ZIP" -d "$TEMP_DIR"
@@ -62,22 +66,60 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Localizar Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK="$ANDROID_HOME"
+
+          if [ ! -d "$SDK" ]; then
+            echo "::error::Android SDK não encontrado: $SDK"
+            exit 1
+          fi
+
+          SDKMANAGER="$(find "$SDK/cmdline-tools" \
+            -type f -name sdkmanager 2>/dev/null | sort -V | tail -1)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager não encontrado."
+            find "$SDK" -maxdepth 5 -type f | head -200
+            exit 1
+          fi
+
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+
+          echo "SDK: $SDK"
+          echo "Ferramenta: $SDKMANAGER"
+          "$SDKMANAGER" --version
+
+      - name: Aceitar licenças Android
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1
+          LICENSE_RESULT=$?
+          set -e
+
+          echo "Processo de aceite de licenças finalizado: $LICENSE_RESULT"
+
+          "$SDKMANAGER" --list_installed
 
       - name: Instalar componentes Android
         shell: bash
         run: |
           set -euo pipefail
 
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-
-          sdkmanager \
+          "$SDKMANAGER" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-          echo "SDK Android configurado."
+          echo "Componentes Android instalados."
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -92,9 +134,13 @@ jobs:
           java -version
           gradle --version
 
-          echo "========== CONFIGURAÇÃO DO PROJETO =========="
+          echo "========== BUILD GRADLE =========="
           cat android/build.gradle.kts
+
+          echo "========== APP BUILD GRADLE =========="
           cat android/app/build.gradle.kts
+
+          echo "========== WRAPPER =========="
           cat android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Validar configuração Gradle
