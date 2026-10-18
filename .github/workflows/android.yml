@@ -9,14 +9,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: kupa-android-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: build
     runs-on: ubuntu-latest
     timeout-minutes: 40
-
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Baixar repositório
@@ -25,31 +26,32 @@ jobs:
       - name: Extrair projeto KUPA
         shell: bash
         run: |
-          set -euo pipefail
-
+          set -Eeuo pipefail
           ZIP="$GITHUB_WORKSPACE/kupa-projeto.zip"
-          test -f "$ZIP" || {
-            echo "::error::kupa-projeto.zip não encontrado."
+
+          if [[ ! -f "$ZIP" ]]; then
+            echo "::error::Não encontrei kupa-projeto.zip na raiz do repositório."
             exit 1
-          }
+          fi
 
-          TEMP_DIR="$(mktemp -d)"
-          unzip -q "$ZIP" -d "$TEMP_DIR"
+          EXTRACT_DIR="$RUNNER_TEMP/kupa-extraido"
+          mkdir -p "$EXTRACT_DIR"
+          unzip -q "$ZIP" -d "$EXTRACT_DIR"
 
-          if [ -f "$TEMP_DIR/kupa/android/settings.gradle.kts" ]; then
-            ROOT="$TEMP_DIR/kupa"
-          elif [ -f "$TEMP_DIR/android/settings.gradle.kts" ]; then
-            ROOT="$TEMP_DIR"
+          if [[ -f "$EXTRACT_DIR/kupa/android/settings.gradle.kts" ]]; then
+            PROJECT_ROOT="$EXTRACT_DIR/kupa"
+          elif [[ -f "$EXTRACT_DIR/android/settings.gradle.kts" ]]; then
+            PROJECT_ROOT="$EXTRACT_DIR"
           else
-            echo "::error::Projeto Android não encontrado no ZIP."
-            find "$TEMP_DIR" -maxdepth 5 -type f | head -200
+            echo "::error::O ZIP não contém android/settings.gradle.kts na raiz esperada."
+            find "$EXTRACT_DIR" -maxdepth 5 -type f | sort | head -250
             exit 1
           fi
 
           for item in android backend README.md README_BACKEND.md render.yaml; do
-            if [ -e "$ROOT/$item" ]; then
+            if [[ -e "$PROJECT_ROOT/$item" ]]; then
               rm -rf "$GITHUB_WORKSPACE/$item"
-              cp -a "$ROOT/$item" "$GITHUB_WORKSPACE/$item"
+              cp -a "$PROJECT_ROOT/$item" "$GITHUB_WORKSPACE/$item"
             fi
           done
 
@@ -57,133 +59,110 @@ jobs:
           test -f android/build.gradle.kts
           test -f android/app/build.gradle.kts
 
-          echo "Projeto KUPA extraído."
+          echo "Estrutura Android encontrada."
+          find android -maxdepth 4 -type f \( -name '*.gradle.kts' -o -name 'gradle-wrapper.properties' -o -name 'gradlew' \) -print | sort
 
       - name: Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
-      - name: Localizar Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SDK="$ANDROID_HOME"
-          test -d "$SDK" || {
-            echo "::error::Android SDK não encontrado: $SDK"
-            exit 1
-          }
-
-          SDKMANAGER="$(find "$SDK/cmdline-tools" \
-            -type f -name sdkmanager 2>/dev/null | sort -V | tail -1)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager não encontrado."
-            find "$SDK" -maxdepth 5 -type f | head -200
-            exit 1
-          fi
-
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
-          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
-
-          "$SDKMANAGER" --version
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Aceitar licenças Android
         shell: bash
         run: |
-          set -euo pipefail
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-          "$SDKMANAGER" --list_installed
+          set -Eeuo pipefail
+          yes | sdkmanager --licenses >/dev/null
 
       - name: Instalar componentes Android
         shell: bash
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          sdkmanager --list_installed
 
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      - name: Configurar Gradle
+      - name: Configurar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+          cache-read-only: false
 
-      - name: Diagnosticar ambiente
+      - name: Diagnosticar ambiente e configuração
         shell: bash
         run: |
-          set -euo pipefail
-          java -version
-          gradle --version
-
-          echo "========== SETTINGS =========="
-          cat android/settings.gradle.kts
-
-          echo "========== BUILD GRADLE =========="
-          cat android/build.gradle.kts
-
-          echo "========== APP BUILD GRADLE =========="
-          cat android/app/build.gradle.kts
-
-          echo "========== WRAPPER =========="
-          cat android/gradle/wrapper/gradle-wrapper.properties
+          set -Eeuo pipefail
+          {
+            echo '=== JAVA ==='
+            java -version
+            echo '=== GRADLE ==='
+            gradle --version
+            echo '=== ANDROID SDK ==='
+            echo "ANDROID_HOME=${ANDROID_HOME:-não definido}"
+            sdkmanager --list_installed
+            echo '=== VERSÕES DOS PLUGINS ==='
+            grep -nE 'com.android.application|org.jetbrains.kotlin.android' android/build.gradle.kts
+            echo '=== WRAPPER ==='
+            if [[ -f android/gradle/wrapper/gradle-wrapper.properties ]]; then
+              cat android/gradle/wrapper/gradle-wrapper.properties
+            else
+              echo 'Sem wrapper; usando Gradle instalado pelo workflow.'
+            fi
+            echo '=== URL DO BACKEND ==='
+            grep -n '^KUPA_BACKEND_URL=' android/kupa.properties || true
+          } 2>&1 | tee kupa-environment.log
 
       - name: Validar configuração Gradle
         working-directory: android
         shell: bash
         run: |
-          set -o pipefail
+          set -Eeuo pipefail
+          set +e
+          gradle help --no-daemon --stacktrace --info 2>&1 | tee ../kupa-config.log
+          result=${PIPESTATUS[0]}
+          set -e
 
-          gradle tasks \
-            --no-daemon \
-            --stacktrace \
-            --console=plain 2>&1 | tee ../kupa-config.log
+          if [[ $result -ne 0 ]]; then
+            echo '=== ERROS IMPORTANTES DA CONFIGURAÇÃO ==='
+            grep -n -B 5 -A 12 -Ei 'What went wrong:|^\* What went wrong|^e: |^error:|Could not |A problem occurred|Caused by:|invalid|exception' ../kupa-config.log | head -220 || true
+            exit "$result"
+          fi
 
       - name: Compilar APK Debug
         working-directory: android
         shell: bash
         run: |
+          set -Eeuo pipefail
           set +e
+          gradle :app:assembleDebug --no-daemon --stacktrace --info --warning-mode all 2>&1 | tee ../kupa-build.log
+          result=${PIPESTATUS[0]}
+          set -e
 
-          gradle assembleDebug \
-            --no-daemon \
-            --stacktrace \
-            --info \
-            --console=plain 2>&1 | tee ../kupa-build.log
-
-          RESULT=${PIPESTATUS[0]}
-
-          echo ""
-          echo "========== MENSAGENS DE ERRO =========="
-
-          grep -n -i -B 6 -A 12 -E \
-            "What went wrong|Execution failed for task|Compilation error|error:|e: file:|Unresolved reference|Could not resolve|Could not find|Android resource linking failed|Manifest merger failed|Duplicate class|Caused by:|FAILURE: Build failed" \
-            ../kupa-build.log | tail -240 || true
-
-          echo ""
-          echo "========== FINAL DO LOG =========="
-          tail -100 ../kupa-build.log || true
-
-          exit "$RESULT"
+          if [[ $result -ne 0 ]]; then
+            echo '::error::A compilação falhou. Mensagens relevantes abaixo; o log completo será publicado como artefato.'
+            grep -n -B 6 -A 18 -Ei '^\* What went wrong:|^What went wrong:|^e: |^error:|Compilation error|Unresolved reference|Could not resolve|Could not find|Execution failed for task|Caused by:|^BUILD FAILED' ../kupa-build.log | head -300 || true
+            exit "$result"
+          fi
 
       - name: Verificar APK
         if: success()
         shell: bash
         run: |
-          set -euo pipefail
-
+          set -Eeuo pipefail
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
 
-          test -s "$APK"
-          unzip -t "$APK" >/dev/null
-          ls -lh "$APK"
+          if [[ ! -s "$APK" ]]; then
+            echo "::error::Gradle terminou sem gerar um APK válido em $APK"
+            exit 1
+          fi
 
-          echo "APK gerado e validado."
+          ls -lh "$APK"
+          file "$APK"
+          unzip -t "$APK" >/dev/null
+          echo 'APK gerado e arquivo íntegro.'
 
       - name: Publicar APK
         if: success()
@@ -200,6 +179,7 @@ jobs:
         with:
           name: KUPA-build-diagnostics
           path: |
+            kupa-environment.log
             kupa-config.log
             kupa-build.log
           if-no-files-found: ignore
